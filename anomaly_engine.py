@@ -11,7 +11,7 @@ import numpy as np
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 from dotenv import load_dotenv
-from datetime import datetime, timedelta
+from datetime import datetime
 
 load_dotenv()
 
@@ -34,10 +34,36 @@ class AnomalyDetectionEngine:
                 port=os.getenv('DB_PORT', 5432)
             )
             self.cursor = self.conn.cursor()
+            self.ensure_anomaly_scores_table()
             print("✓ Database connection established")
         except Exception as e:
             print(f"✗ Database connection failed: {e}")
             raise
+
+    def ensure_anomaly_scores_table(self):
+        """Create anomaly_scores table if it does not exist for updated schema."""
+        create_query = """
+        CREATE TABLE IF NOT EXISTS anomaly_scores (
+            score_id SERIAL PRIMARY KEY,
+            reading_id INTEGER UNIQUE NOT NULL REFERENCES weather_readings(id) ON DELETE CASCADE,
+            anomaly_score_zscore DOUBLE PRECISION,
+            is_anomaly_zscore BOOLEAN DEFAULT FALSE,
+            anomaly_score_isolationforest DOUBLE PRECISION,
+            is_anomaly_isolationforest BOOLEAN DEFAULT FALSE,
+            severity VARCHAR(20) DEFAULT 'normal',
+            detected_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+            acknowledged BOOLEAN DEFAULT FALSE
+        );
+        """
+
+        index_query = """
+        CREATE INDEX IF NOT EXISTS idx_anomaly_scores_reading_id
+        ON anomaly_scores(reading_id);
+        """
+
+        self.cursor.execute(create_query)
+        self.cursor.execute(index_query)
+        self.conn.commit()
     
     def close_db(self):
         """Close database connection"""
@@ -49,16 +75,23 @@ class AnomalyDetectionEngine:
     def load_weather_data(self, days_back=30):
         """Load weather data from database for the last N days"""
         query = """
-        SELECT reading_id, location_id, location_geom, temp, pressure, humidity, 
-               created_at
+        SELECT
+            id AS reading_id,
+            city_name,
+            ST_AsText(location::geometry) AS location_key,
+            temperature AS temp,
+            pressure,
+            humidity,
+            recorded_at AS created_at
         FROM weather_readings
-        WHERE created_at >= NOW() - INTERVAL '%s days'
-        ORDER BY location_id, created_at
+        WHERE recorded_at >= NOW() - (%s * INTERVAL '1 day')
+        ORDER BY location_key, created_at
         """
         try:
             df = pd.read_sql_query(
-                query % days_back,
+                query,
                 self.conn,
+                params=[days_back],
                 parse_dates=['created_at']
             )
             print(f"✓ Loaded {len(df)} weather readings")
@@ -72,12 +105,18 @@ class AnomalyDetectionEngine:
         Week 1: Detect anomalies using Z-score baseline
         Flags readings where |z| > 2.5
         """
-        df['z_score_temp'] = np.abs((df['temp'] - df.groupby('location_id')['temp'].transform('mean')) / 
-                                     df.groupby('location_id')['temp'].transform('std'))
-        df['z_score_pressure'] = np.abs((df['pressure'] - df.groupby('location_id')['pressure'].transform('mean')) / 
-                                         df.groupby('location_id')['pressure'].transform('std'))
-        df['z_score_humidity'] = np.abs((df['humidity'] - df.groupby('location_id')['humidity'].transform('mean')) / 
-                                         df.groupby('location_id')['humidity'].transform('std'))
+        group_col = 'location_key'
+        temp_std = df.groupby(group_col)['temp'].transform('std').replace(0, np.nan)
+        pressure_std = df.groupby(group_col)['pressure'].transform('std').replace(0, np.nan)
+        humidity_std = df.groupby(group_col)['humidity'].transform('std').replace(0, np.nan)
+
+        df['z_score_temp'] = np.abs((df['temp'] - df.groupby(group_col)['temp'].transform('mean')) / temp_std)
+        df['z_score_pressure'] = np.abs((df['pressure'] - df.groupby(group_col)['pressure'].transform('mean')) / pressure_std)
+        df['z_score_humidity'] = np.abs((df['humidity'] - df.groupby(group_col)['humidity'].transform('mean')) / humidity_std)
+
+        df[['z_score_temp', 'z_score_pressure', 'z_score_humidity']] = df[
+            ['z_score_temp', 'z_score_pressure', 'z_score_humidity']
+        ].fillna(0.0)
         
         # Flag if any metric exceeds Z-score threshold
         threshold = 2.5
@@ -99,13 +138,13 @@ class AnomalyDetectionEngine:
         features = ['temp', 'pressure', 'humidity']
         models = {}
         
-        for location_id in df['location_id'].unique():
-            location_data = df[df['location_id'] == location_id][features]
+        for location_key in df['location_key'].unique():
+            location_data = df[df['location_key'] == location_key][features]
             
             if len(location_data) > 10:  # Need minimum samples
                 model = IsolationForest(contamination=0.1, random_state=42)
                 model.fit(location_data)
-                models[location_id] = model
+                models[location_key] = model
         
         print(f"✓ Isolation Forest models trained for {len(models)} locations")
         return models
@@ -119,12 +158,12 @@ class AnomalyDetectionEngine:
         df['anomaly_score_isolationforest'] = 0.0
         df['is_anomaly_isolationforest'] = False
         
-        for location_id in df['location_id'].unique():
-            mask = df['location_id'] == location_id
+        for location_key in df['location_key'].unique():
+            mask = df['location_key'] == location_key
             
-            if location_id in models:
+            if location_key in models:
                 location_data = df.loc[mask, features]
-                scores = models[location_id].decision_function(location_data)
+                scores = models[location_key].decision_function(location_data)
                 df.loc[mask, 'anomaly_score_isolationforest'] = scores
                 # Isolation Forest returns negative scores for anomalies
                 df.loc[mask, 'is_anomaly_isolationforest'] = scores < -0.5

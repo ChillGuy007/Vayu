@@ -21,6 +21,9 @@ def init_database():
     cursor = conn.cursor()
     
     try:
+        # Ensure PostGIS is available for GEOGRAPHY(Point, 4326)
+        cursor.execute("CREATE EXTENSION IF NOT EXISTS postgis;")
+
         # Drop existing tables if they exist
         cursor.execute("DROP TABLE IF EXISTS anomaly_scores CASCADE;")
         cursor.execute("DROP TABLE IF EXISTS weather_readings CASCADE;")
@@ -28,15 +31,15 @@ def init_database():
         # Create weather_readings table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS weather_readings (
-            reading_id SERIAL PRIMARY KEY,
-            location_id INTEGER NOT NULL,
-            location_geom POINT,
-            temp FLOAT NOT NULL,
-            pressure FLOAT NOT NULL,
-            humidity FLOAT NOT NULL,
+            id SERIAL PRIMARY KEY,
+            location GEOGRAPHY(Point, 4326),
+            city_name VARCHAR(100),
+            temperature FLOAT,
+            humidity FLOAT,
+            pressure FLOAT,
             wind_speed FLOAT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            precipitation FLOAT,
+            recorded_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
         );
         """)
         
@@ -44,22 +47,31 @@ def init_database():
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS anomaly_scores (
             score_id SERIAL PRIMARY KEY,
-            reading_id INTEGER UNIQUE NOT NULL REFERENCES weather_readings(reading_id) ON DELETE CASCADE,
+            reading_id INTEGER UNIQUE NOT NULL REFERENCES weather_readings(id) ON DELETE CASCADE,
             anomaly_score_zscore FLOAT,
             is_anomaly_zscore BOOLEAN DEFAULT FALSE,
             anomaly_score_isolationforest FLOAT,
             is_anomaly_isolationforest BOOLEAN DEFAULT FALSE,
             severity VARCHAR(20) DEFAULT 'normal',
-            detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            acknowledged BOOLEAN DEFAULT FALSE,
-            FOREIGN KEY (reading_id) REFERENCES weather_readings(reading_id)
+            detected_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+            acknowledged BOOLEAN DEFAULT FALSE
         );
         """)
         
         # Create indices for performance
         cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_weather_location_time 
-        ON weather_readings(location_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_weather_recorded_at
+        ON weather_readings(recorded_at DESC);
+        """)
+
+        cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_weather_city_time
+        ON weather_readings(city_name, recorded_at DESC);
+        """)
+
+        cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_weather_location_gist
+        ON weather_readings USING GIST(location);
         """)
         
         cursor.execute("""

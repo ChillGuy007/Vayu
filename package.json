@@ -5,7 +5,9 @@
   "main": "scheduler.js",
   "scripts": {
     "start": "node scheduler.js",
-    "dev": "python3 anomaly_engine.py"
+    "start:api": "node server.js",
+    "dev": "python3 anomaly_engine.py",
+    "load-weather": "node data_loader.js"
   },
   "keywords": [
     "anomaly-detection",
@@ -16,6 +18,16 @@
   ],
   "author": "",
   "license": "MIT",
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.13.1"
+    ,"socket.io": "^4.8.1",
+    "twilio": "^5.4.3"
+  },
   "optionalDependencies": {
     "node-cron": "^3.0.0"
   },
