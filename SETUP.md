@@ -57,6 +57,32 @@ Add to crontab:
 node scheduler.js
 ```
 
+## Running REST API Backend
+
+```bash
+npm run start:api
+```
+
+Default port is `3000` (set `PORT` in `.env` to override).
+
+### Required auth env var
+
+```env
+JWT_SECRET=change_this_to_a_long_random_secret
+```
+
+### Optional SMS env vars (for SOS)
+
+```env
+TWILIO_ACCOUNT_SID=...
+TWILIO_AUTH_TOKEN=...
+TWILIO_FROM_NUMBER=+1...
+```
+
+### API Test Commands
+
+See `API_TESTS.md` for quick curl checks of all endpoints.
+
 Or with node-cron (uncomment in scheduler.js and install):
 ```bash
 npm install node-cron
